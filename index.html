@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Restaurante QR</title>
+<style>
+:root{--bg:#faf7f2;--card:#fff;--tx:#2a2420;--mut:#7a6f66;--ac:#c2410c;--ln:#e8e0d6;--ok:#15803d;--wa:#b45309;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#1c1917;--card:#292524;--tx:#f5f0ea;--mut:#a8a29e;--ac:#fb923c;--ln:#3d3835;--ok:#4ade80;--wa:#fbbf24;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#1c1917;--card:#292524;--tx:#f5f0ea;--mut:#a8a29e;--ac:#fb923c;--ln:#3d3835;--ok:#4ade80;--wa:#fbbf24;color-scheme:dark}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:760px;margin:0 auto;padding:16px}
+h1{font-size:22px;margin:0 0 4px}h2{font-size:16px;margin:18px 0 8px}
+.mut{color:var(--mut);font-size:14px}
+.card{background:var(--card);border:1px solid var(--ln);border-radius:12px;padding:12px;margin:8px 0}
+.row{display:flex;align-items:center;justify-content:space-between;gap:8px}
+button,a.b{background:var(--ac);color:#fff;border:0;border-radius:8px;padding:8px 14px;font:inherit;cursor:pointer;text-decoration:none;display:inline-block}
+button.g{background:transparent;color:var(--tx);border:1px solid var(--ln)}
+button.q{width:34px;padding:6px 0}
+input{font:inherit;padding:8px;border:1px solid var(--ln);border-radius:8px;background:var(--card);color:var(--tx);width:120px;box-sizing:border-box}
+.tag{font-size:12px;border-radius:99px;padding:2px 10px;border:1px solid var(--ln)}
+.Nuevo{color:var(--wa)}.Preparando{color:var(--ac)}.Listo{color:var(--ok)}.Entregado{color:var(--mut)}
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+nav{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+textarea{font:inherit;padding:8px;border:1px solid var(--ln);border-radius:8px;background:var(--card);color:var(--tx);width:100%;box-sizing:border-box;margin-top:6px}
+.note{margin-top:6px;padding:6px 10px;border-radius:8px;border:1px dashed var(--wa);color:var(--wa);font-size:14px}
+.open{cursor:pointer}
+button:disabled{opacity:.5;cursor:default}
+#toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(16px + env(safe-area-inset-bottom,0px));background:#15803d;color:#fff;padding:10px 18px;border-radius:10px;font-size:15px;z-index:20;display:none;max-width:90%;text-align:center}
+ul{margin:8px 0 0;padding-left:20px}
+hr{border:0;border-top:1px dashed var(--ln);margin:10px 0}
+@media print{
+ body *{visibility:hidden}
+ #ticket,#ticket *{visibility:visible}
+ #ticket{position:absolute;left:0;top:0;width:100%;border:0;background:#fff;color:#000}
+ #ticket .mut{color:#444}
+}
+</style>
+</head>
+<body>
+<main id="app"></main>
+<div id="toast"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>
+const SB_URL="https://ikcbarsixbrdbeoktyco.supabase.co";
+const SB_KEY="sb_publishable_YtQxHAhJOsTYAmV7zYBTTw_TlB8NKXu";
+const NOMBRE="Restaurante"; /* nombre que sale en el ticket: cámbialo por el de tu restaurante */
+const $=s=>document.querySelector(s);
+let cart={},mm="",nota="",abiertos={},nMesas=3,menu=[],orders=[],E=null,P={cuentas:[],llamadas:[]},tk=null;
+let A=null,form=null,cajaRep=null,cerrando=null;
+let loaded=false,sig="",errMsg="",tok=0,busy=false,inflight=false;
+let ses=null;try{ses=JSON.parse(localStorage.getItem("qr_ses")||"null")}catch(e){}
+let BASE=(()=>{try{const s=localStorage.getItem("qr_base");if(s)return s}catch(e){}return location.origin+location.pathname})();
+const getTok=m=>{try{return localStorage.getItem("qr_tok_"+m)||""}catch(e){return""}};
+const setTok=(m,t)=>{try{t?localStorage.setItem("qr_tok_"+m,t):localStorage.removeItem("qr_tok_"+m)}catch(e){}};
+
+/* ---------- Supabase (peticiones directas, sin librerías) ---------- */
+function setSes(s){ses=s;try{s?localStorage.setItem("qr_ses",JSON.stringify(s)):localStorage.removeItem("qr_ses")}catch(e){}}
+function norm(d){return{access_token:d.access_token,refresh_token:d.refresh_token,expires_at:d.expires_at||Math.floor(Date.now()/1000)+d.expires_in}}
+async function rawAuth(grant,body){
+ const r=await fetch(SB_URL+"/auth/v1/token?grant_type="+grant,{method:"POST",headers:{apikey:SB_KEY,"Content-Type":"application/json"},body:JSON.stringify(body)});
+ const d=await r.json();if(!r.ok)throw new Error(d.msg||d.error_description||d.message||"No se pudo iniciar sesión");return d}
+async function refresh(){
+ if(!ses||ses.expires_at-Date.now()/1000>60)return;
+ try{const rl=ses.rol;const n=norm(await rawAuth("refresh_token",{refresh_token:ses.refresh_token}));n.rol=rl;setSes(n)}catch(e){setSes(null)}}
+async function api(path,o={}){
+ const h={apikey:SB_KEY,"Content-Type":"application/json"};
+ if(o.auth){await refresh();if(!ses){render();throw new Error("Sesión vencida, entra de nuevo")}h.Authorization="Bearer "+ses.access_token}
+ if(o.prefer)h.Prefer=o.prefer;
+ const r=await fetch(SB_URL+path,{method:o.method||"GET",headers:h,body:o.body?JSON.stringify(o.body):undefined});
+ const t=await r.text();let d=null;try{d=t?JSON.parse(t):null}catch(e){}
+ if(!r.ok){if(r.status===401&&o.auth){setSes(null);render()}throw new Error((d&&(d.message||d.msg||d.error_description))||"Error "+r.status)}
+ return d}
+const rpc=(fn,body,auth)=>api("/rest/v1/rpc/"+fn,{method:"POST",body:body||{},auth:!!auth});
+
+/* ---------- utilidades ---------- */
+const money=n=>"$"+Number(n).toLocaleString("es-MX",{minimumFractionDigits:2,maximumFractionDigits:2});
+const esc=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+const noteLine=o=>o.nota?'<div class="note">📝 '+esc(o.nota)+'</div>':"";
+const tot=l=>l.reduce((s,o)=>s+o.items.reduce((a,i)=>a+i.p*i.q,0),0);
+function cartItems(){return menu.filter(i=>cart[i.id]&&!i.agotado).map(i=>({id:i.id,n:i.nombre,p:Number(i.precio),q:cart[i.id]}))}
+function canSend(){return cartItems().length>0||nota.trim().length>0}
+let tt;function toast(msg,bad){const t=$("#toast");t.textContent=msg;t.style.background=bad?"#b91c1c":"#15803d";t.style.display="block";clearTimeout(tt);tt=setTimeout(()=>{t.style.display="none"},3500)}
+function chg(id,d){cart[id]=Math.max(0,(cart[id]||0)+d);render()}
+function upNota(v){nota=v;document.querySelectorAll(".snd").forEach(b=>b.disabled=!canSend())}
+function tog(id){abiertos[id]=!abiertos[id];render()}
+function itemsTxt(o){return o.items.length?o.items.map(i=>i.q+"× "+esc(i.n)).join(", "):"Solo nota"}
+function route(){
+ const r=location.hash.slice(1);let m=r.match(/^cliente-(\d+)$/);if(m)return{t:"cliente",m:m[1]};
+ if(/^mesero(-\d+)?$/.test(r))return{t:"mesero"};
+ if(r==="cocina")return{t:"cocina"};if(r==="personal")return{t:"personal"};if(/^admin(-caja)?$/.test(r))return{t:"admin",tab:r==="admin-caja"?"caja":"menu"};return{t:"landing"}}
+
+/* ---------- carga de datos: UNA sola consulta, cada 2-3 segundos ---------- */
+async function load(force){
+ const R=route();
+ if(R.t==="landing"||R.t==="personal"||((R.t==="mesero"||R.t==="cocina"||R.t==="admin")&&!ses)||(R.t==="admin"&&!isAdmin()))return;
+ if(inflight&&!force)return;
+ const my=++tok;inflight=true;
+ try{
+  const d=R.t==="cliente"?await rpc("estado_mesa",{p_mesa:R.m,p_token:getTok(R.m)}):R.t==="admin"?await rpc(R.tab==="caja"?"resumen_caja":"admin_productos",{},true):await rpc("panel_personal",{},true);
+  if(my!==tok)return;
+  errMsg="";
+  const s=JSON.stringify(d);
+  if(loaded&&s===sig&&!force)return;
+  const typing=document.activeElement&&/^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName);
+  if(loaded&&typing&&!force)return;
+  sig=s;
+  if(R.t==="cliente"){menu=d.menu||[];E=d}else if(R.t==="admin")A=d;else{menu=d.menu||[];P=d;orders=d.pedidos||[]}
+  loaded=true;render();
+ }catch(x){if(my===tok&&!loaded){errMsg=x.message;render()}}
+ finally{if(my===tok)inflight=false}
+}
+function sync(){cart={};nota="";tk=null;cerrando=null;form=null;cajaRep=null;loaded=false;sig="";errMsg="";tok++;inflight=false;const x=location.hash.match(/^#mesero-(\d+)$/);if(x)mm=x[1];render();load();getRol()}
+async function getRol(){if(!ses||ses.rol)return;try{const r=await rpc("mi_rol",{},true);if(ses){ses.rol=r||"personal";setSes(ses)}render();load()}catch(e){}}
+const isAdmin=()=>!!ses&&ses.rol==="admin";
+addEventListener("hashchange",sync);
+document.addEventListener("visibilitychange",()=>{if(!document.hidden)load()});
+(function loop(){if(!document.hidden)load();setTimeout(loop,route().t==="cliente"?3000:route().t==="admin"?6000:2000)})();
+
+/* ---------- acciones del cliente ---------- */
+async function send(mesa){
+ if(busy)return;
+ if(!mesa){toast("Escribe el número de mesa",true);return}
+ const items=cartItems();if(!items.length&&!nota.trim())return;
+ const R=route();busy=true;
+ try{
+  const r=await rpc("crear_pedido",{p_mesa:String(mesa),p_items:items.map(i=>({id:i.id,q:i.q})),p_nota:nota.trim(),p_token:R.t==="cliente"?getTok(mesa):""});
+  if(R.t==="cliente")setTok(mesa,r.token);
+  cart={};nota="";
+  toast(R.t==="cliente"?"✅ Pedido #"+r.pedido_id+" enviado a cocina. Código de tu mesa: "+r.token:"✅ Pedido #"+r.pedido_id+" agregado a la mesa "+mesa+" y enviado a cocina");
+  await load(true);
+ }catch(x){toast(x.message,true);await load(true)}
+ busy=false}
+async function join(){
+ const m=route().m,v=$("#j").value.trim().toUpperCase();
+ if(!/^[A-Z0-9]{4,8}$/.test(v)){toast("Escribe el código de tu mesa",true);return}
+ setTok(m,v);await load(true);
+ if(E&&E.estado==="abierta")toast("✅ Te uniste a la cuenta de la mesa "+m);
+ else{setTok(m,"");toast("Código incorrecto",true)}}
+async function llamar(){
+ try{await rpc("llamar_mesero",{p_mesa:route().m});if(E)E.llamada=true;sig="";render();toast("🔔 Avisamos al mesero, ya viene");load(true)}catch(x){toast(x.message,true)}}
+function nuevo(){setTok(route().m,"");load(true)}
+
+/* ---------- acciones del personal ---------- */
+async function setEstado(id,e){
+ const o=orders.find(x=>x.id==id),prev=o&&o.estado;if(o){o.estado=e;sig="";render()}
+ try{await api("/rest/v1/pedidos?id=eq."+id,{method:"PATCH",body:{estado:e},auth:true,prefer:"return=minimal"});load(true)}
+ catch(x){if(o){o.estado=prev;render()}toast(x.message,true)}}
+async function toggleAgot(id){
+ const i=menu.find(x=>x.id===id);if(!i)return;i.agotado=!i.agotado;sig="";render();
+ try{await rpc("marcar_agotado",{p_id:id,p_agotado:i.agotado},true);load(true)}
+ catch(x){i.agotado=!i.agotado;render();toast(x.message,true)}}
+async function atender(m){
+ P.llamadas=(P.llamadas||[]).filter(x=>x!=m);sig="";render();
+ try{await rpc("atender_llamada",{p_mesa:String(m)},true);load(true)}catch(x){toast(x.message,true);load(true)}}
+async function verTicket(id){
+ try{tk=await rpc("ticket_cuenta",{p_cuenta:id},true);render();scrollTo(0,0)}catch(x){toast(x.message,true)}}
+function cerrar(m){cerrando={m:m,metodo:"efectivo"};render();scrollTo(0,0)}
+function setMetodo(x){cerrando.metodo=x;render()}
+async function confirmarCierre(){
+ const c=cerrando;
+ try{tk=await rpc("cerrar_cuenta",{p_mesa:String(c.m),p_metodo:c.metodo},true);cerrando=null;toast("✅ Cuenta de la mesa "+c.m+" cerrada");await load(true);render();scrollTo(0,0)}catch(x){toast(x.message,true)}}
+async function login(){
+ try{setSes(norm(await rawAuth("password",{email:$("#em").value.trim(),password:$("#pw").value})));sync()}
+ catch(x){toast(/invalid/i.test(x.message)?"Correo o contraseña incorrectos":x.message,true)}}
+function logout(){setSes(null);location.hash="";sync()}
+function setBase(v){v=v.trim().replace(/#.*$/,"");if(v){BASE=v;try{localStorage.setItem("qr_base",v)}catch(e){}}render()}
+
+/* ---------- vistas ---------- */
+function nav(){return '<nav><a class="b" href="#personal">Panel</a></nav>'}
+function landing(){return '<h1>Bienvenido</h1><p class="mut">Escanea el código QR que está en tu mesa para ver el menú y hacer tu pedido.</p>'}
+function gate(){return '<h1>Acceso del personal</h1><div class="card"><p><input id="em" type="email" placeholder="Correo" style="width:100%" autocomplete="username"></p><p><input id="pw" type="password" placeholder="Contraseña" style="width:100%" autocomplete="current-password" onkeydown="event.keyCode==13&&login()"></p><button onclick="login()">Entrar</button></div>'}
+function notaHTML(){return '<div class="card"><b>Nota para cocina</b> <span class="mut">(puedes enviarla sola)</span><textarea rows="2" placeholder="Ej. sin cebolla, alergia a las nueces…" oninput="upNota(this.value)">'+esc(nota)+'</textarea></div>'}
+function menuHTML(){
+ const g={};menu.forEach(i=>{(g[i.categoria]=g[i.categoria]||[]).push(i)});
+ return Object.keys(g).map(cat=>'<h2>'+(g[cat][0].promo?'🔥 ':'')+esc(cat)+'</h2>'+g[cat].map(i=>{
+  const pr=(i.precio_normal?'<s>'+money(i.precio_normal)+'</s> ':'')+'<b>'+money(i.precio)+'</b>'+(i.promo?' <span class="tag Listo">Promo</span>':'');
+  if(i.agotado)return '<div class="card row" style="opacity:.6"><div>'+esc(i.nombre)+'<div class="mut">'+pr+'</div></div><span class="tag Nuevo">Agotado</span></div>';
+  return '<div class="card row"><div>'+esc(i.nombre)+'<div class="mut">'+pr+'</div></div><div class="row">'+
+  '<button class="g q" onclick="chg('+i.id+',-1)">−</button><b>'+(cart[i.id]||0)+'</b>'+
+  '<button class="q" onclick="chg('+i.id+',1)">+</button></div></div>'}).join("")).join("")}
+function ordHTML(o){return '<div class="card"><div class="row"><b>Pedido #'+o.id+'</b><span class="tag '+o.estado+'">'+o.estado+'</span></div><div class="mut">'+itemsTxt(o)+'</div>'+noteLine(o)+'</div>'}
+function detalle(o){if(!o.items.length)return '<div class="mut">Solo nota, sin artículos</div>';return abiertos[o.id]?'<ul>'+o.items.map(i=>'<li><b>'+i.q+'×</b> '+esc(i.n)+'</li>').join("")+'</ul>':'<div class="mut">'+o.items.reduce((s,i)=>s+i.q,0)+' artículos · toca para ver el detalle</div>'}
+function stockHTML(){return '<h2>Disponibilidad del menú</h2><div class="mut">Toca un platillo cuando se acabe para que ya no lo puedan pedir.</div>'+menu.map(i=>'<div class="card row"><span>'+esc(i.nombre)+'</span><button class="'+(i.agotado?'':'g')+'" onclick="toggleAgot('+i.id+')">'+(i.agotado?'Agotado · reactivar':'Marcar agotado')+'</button></div>').join("")}
+function ticketHTML(t){
+ const f=d=>d?new Date(d).toLocaleString("es-MX",{dateStyle:"short",timeStyle:"short"}):"—";
+ return '<div id="ticket" class="card" style="font-family:ui-monospace,Menlo,Consolas,monospace;max-width:380px;margin:12px auto">'+
+ '<div style="text-align:center"><b>'+esc(NOMBRE)+'</b><div class="mut">Ticket #'+t.folio+' · Mesa '+t.mesa+'</div></div><hr>'+
+ '<div class="mut">Abierta: '+f(t.abierta_at)+'<br>'+(t.cerrada_at?'Cerrada: '+f(t.cerrada_at):'Cuenta abierta (aún no se cierra)')+(t.metodo?'<br>Pago: '+esc(cap(t.metodo)):'')+'</div><hr>'+
+ (t.items.length?t.items.map(i=>'<div class="row"><span>'+i.q+'× '+esc(i.n)+'</span><span>'+money(i.sub)+'</span></div>').join(""):'<div class="mut">Sin artículos</div>')+
+ '<hr><div class="row" style="font-size:18px"><b>TOTAL</b><b>'+money(t.total)+'</b></div>'+
+ '<p class="mut" style="text-align:center;margin-bottom:0">¡Gracias por su visita!</p></div>'}
+function qrHTML(){let h='<h2>Códigos QR de las mesas</h2><div class="card"><div class="mut">Uno por mesa. Cada código abre la vista de esa mesa.</div><p>Dirección pública de tu página: <input style="width:100%" value="'+esc(BASE)+'" onchange="setBase(this.value)"></p><p>Número de mesas: <input type="number" min="1" max="30" value="'+nMesas+'" onchange="nMesas=Math.min(30,Math.max(1,+this.value||1));render()"></p><div class="cols">';for(let n=1;n<=nMesas;n++)h+='<div style="text-align:center"><div class="qr" data-url="'+esc(BASE)+'#cliente-'+n+'" style="background:#fff;padding:8px;border-radius:8px;display:inline-block"></div><div><b>Mesa '+n+'</b></div></div>';return h+'</div></div>'}
+function drawQR(){if(!window.QRCode)return;document.querySelectorAll(".qr").forEach(el=>{el.innerHTML="";try{new QRCode(el,{text:el.dataset.url,width:140,height:140})}catch(e){}})}
+
+function home(){return '<h1>Panel del personal</h1><p><button class="g" onclick="logout()">Cerrar sesión</button></p>'+
+ '<div class="card"><b>Mesero</b><div class="mut">Toma pedidos, atiende llamadas, ve tickets y cierra cuentas.</div><p><a class="b" href="#mesero">Abrir</a></p></div>'+
+ '<div class="card"><b>Cocina</b><div class="mut">Recibe pedidos, cambia su estatus y marca lo que se acabó.</div><p><a class="b" href="#cocina">Abrir</a></p></div>'+
+ (isAdmin()?'<div class="card"><b>Administración</b><div class="mut">Promociones, menú y cierre de caja (solo gerente).</div><p><a class="b" href="#admin">Promociones y menú</a> <a class="b" href="#admin-caja">Caja</a></p></div>':'')+
+ '<div class="card"><b>Vista de cliente (prueba)</b><p><a class="b" href="#cliente-1">Mesa 1</a> <a class="b" href="#cliente-2">Mesa 2</a> <a class="b" href="#cliente-3">Mesa 3</a></p></div>'+qrHTML()}
+
+function cliente(m){
+ const e=E.estado,head='<h1>Mesa '+m+'</h1>';
+ if(e==="cerrada")return head+'<div class="mut">Tu cuenta ya fue cerrada. Este es tu ticket:</div>'+ticketHTML(E.ticket)+
+  '<p style="text-align:center"><button onclick="window.print()">Imprimir ticket</button> <button class="g" onclick="nuevo()">Empezar un pedido nuevo</button></p>';
+ const call='<button class="g" '+(E.llamada?"disabled":"")+' onclick="llamar()">'+(E.llamada?"🔔 Mesero avisado":"🔔 Llamar al mesero")+'</button>';
+ if(e==="bloqueada")return head+'<div class="card"><b>Esta mesa ya tiene una cuenta abierta</b><div class="mut">Para ver o agregar pedidos escribe el código de tu mesa. Pídelo a quien hizo el primer pedido.</div><p class="row" style="justify-content:flex-start"><input id="j" placeholder="Código" maxlength="8" autocapitalize="characters" style="text-transform:uppercase"><button onclick="join()">Unirme</button></p></div><p>'+call+'</p>';
+ const ab=e==="abierta",c=cartItems(),ct=c.reduce((s,i)=>s+i.p*i.q,0);
+ return head+(ab?'<div class="card"><div class="row"><span>Total a pagar</span><b style="font-size:22px">'+money(E.total)+'</b></div><div class="mut">Código de tu mesa: <b style="letter-spacing:2px">'+esc(E.token)+'</b> · compártelo solo con quienes están en tu mesa</div></div>':'<div class="mut">Al enviar tu primer pedido se crea el código de tu mesa para que lo compartas con tus acompañantes.</div>')+
+ '<p>'+call+'</p>'+
+ (ab&&E.pedidos.length?'<h2>Pedidos de la mesa</h2>'+E.pedidos.map(ordHTML).join(""):"")+
+ '<h2>Menú</h2>'+menuHTML()+notaHTML()+
+ '<div class="card row"><b>Tu pedido: '+money(ct)+'</b><button class="snd" '+(canSend()?"":"disabled")+' onclick="send('+m+')">Enviar a cocina</button></div>'}
+
+function mesero(){
+ const c=cartItems(),ct=c.reduce((s,i)=>s+i.p*i.q,0);
+ let h='<nav><a class="b" href="#personal">Panel</a>'+(mm?'<a class="b" href="#cliente-'+esc(mm)+'">Vista de mesa '+esc(mm)+'</a>':"")+'</nav><h1>Mesero</h1>';
+ if(cerrando)h+=cierreHTML();
+ if(tk)h+=ticketHTML(tk)+'<p style="text-align:center"><button onclick="window.print()">Imprimir ticket</button> <button class="g" onclick="tk=null;render()">Ocultar ticket</button></p>';
+ h+=(P.llamadas||[]).map(m=>'<div class="card row" style="border-color:#b91c1c"><b>🔔 Mesa '+esc(m)+' llama al mesero</b><button onclick="atender('+esc(m)+')">Ya voy</button></div>').join("");
+ h+='<h2>Mesas con cuenta abierta</h2>';
+ h+=(P.cuentas||[]).length?P.cuentas.map(cu=>{const l=orders.filter(o=>o.cuenta_id===cu.id);return '<div class="card"><div class="row"><b>Mesa '+cu.mesa+' · '+money(tot(l))+'</b><span class="row"><button class="g" onclick="verTicket('+cu.id+')">Ticket</button><button class="g" onclick="cerrar('+cu.mesa+')">Cerrar cuenta</button></span></div><div class="mut">Código de la mesa: <b>'+esc(cu.token)+'</b></div>'+
+  l.map(o=>'<div class="row mut"><span>#'+o.id+' · '+itemsTxt(o)+(o.nota?' · 📝 '+esc(o.nota):"")+'</span><span class="row"><span class="tag '+o.estado+'">'+o.estado+'</span>'+
+  (o.estado==="Listo"?'<button onclick="setEstado('+o.id+',\'Entregado\')">Entregar</button>':"")+'</span></div>').join("")+'</div>'}).join(""):'<div class="mut">Aún no hay cuentas abiertas.</div>';
+ h+='<h2>Tomar pedido</h2><div class="card">Mesa: <input id="mm" value="'+esc(mm)+'" inputmode="numeric" oninput="mm=this.value"></div>'+menuHTML()+notaHTML()+
+ '<div class="card row"><b>Total: '+money(ct)+'</b><button class="snd" '+(canSend()?"":"disabled")+' onclick="send(mm)">Enviar a cocina</button></div>';
+ return h}
+
+function cocina(){
+ const col=(e,sig,lbl)=>'<div><h2>'+(e==="Preparando"?"En preparación":e==="Nuevo"?"Nuevos":"Listos")+'</h2>'+
+  (orders.filter(o=>o.estado===e).map(o=>'<div class="card open" onclick="tog('+o.id+')"><div class="row"><b>#'+o.id+' · Mesa '+o.mesa+'</b><span class="mut">'+(abiertos[o.id]?'▲':'▼')+'</span></div>'+noteLine(o)+detalle(o)+
+  (sig?'<p><button onclick="event.stopPropagation();setEstado('+o.id+',\''+sig+'\')">'+lbl+'</button></p>':'<p class="mut">Esperando al mesero</p>')+'</div>').join("")||'<div class="mut">Sin pedidos</div>')+'</div>';
+ return nav()+'<h1>Cocina</h1><div class="cols">'+col("Nuevo","Preparando","Empezar")+col("Preparando","Listo","Marcar listo")+col("Listo",null)+'</div>'+stockHTML()}
+
+/* ---------- administración (solo gerente) ---------- */
+const fmt=d=>d?new Date(d).toLocaleString("es-MX",{dateStyle:"short",timeStyle:"short"}):"—";
+const fi=d=>{if(!d)return"";const x=new Date(d);x.setMinutes(x.getMinutes()-x.getTimezoneOffset());return x.toISOString().slice(0,16)};
+const cap=s=>s?s[0].toUpperCase()+s.slice(1):s;
+function cierreHTML(){
+ return '<div class="card"><b>Cerrar cuenta de la mesa '+cerrando.m+'</b><div class="mut">Método de pago</div><p>'+
+ ["efectivo","tarjeta","transferencia"].map(x=>'<button class="'+(cerrando.metodo===x?'':'g')+'" onclick="setMetodo(\''+x+'\')">'+cap(x)+'</button>').join(" ")+
+ '</p><p><button onclick="confirmarCierre()">Confirmar y generar ticket</button> <button class="g" onclick="cerrando=null;render()">Cancelar</button></p></div>'}
+function adminNav(){return '<nav><a class="b" href="#personal">Panel</a><a class="b" href="#admin">Promociones y menú</a><a class="b" href="#admin-caja">Caja</a></nav>'}
+function nuevoProd(promo){form={id:null,nombre:"",categoria:promo?"Promociones":"",precio:"",promo:promo,precio_normal:"",desde:"",hasta:"",activo:true};render();scrollTo(0,0)}
+function editar(id){const p=A.find(x=>x.id===id);if(!p)return;
+ form={id:p.id,nombre:p.nombre,categoria:p.categoria,precio:p.precio,promo:p.promo,precio_normal:p.precio_normal==null?"":p.precio_normal,desde:fi(p.vigente_desde),hasta:fi(p.vigente_hasta),activo:p.activo};render();scrollTo(0,0)}
+async function guardarProd(){
+ const f=form;
+ try{await rpc("admin_guardar_producto",{p_id:f.id,p_nombre:f.nombre,p_categoria:f.categoria,p_precio:+f.precio,p_promo:f.promo,p_precio_normal:f.precio_normal===""?null:+f.precio_normal,p_desde:f.desde?new Date(f.desde).toISOString():null,p_hasta:f.hasta?new Date(f.hasta).toISOString():null,p_activo:f.activo},true);
+  form=null;toast("✅ Guardado");await load(true)}catch(x){toast(x.message,true)}}
+async function activar(id,on){try{await rpc("admin_activar_producto",{p_id:id,p_activo:on},true);await load(true)}catch(x){toast(x.message,true)}}
+async function eliminar(id){
+ if(!confirm("¿Borrar este producto del menú? Los tickets anteriores no cambian."))return;
+ try{await rpc("admin_eliminar_producto",{p_id:id},true);await load(true)}catch(x){toast(x.message,true)}}
+function formHTML(){const f=form;
+ return '<div class="card"><b>'+(f.id?'Editar ':'Nueva ')+(f.promo?'promoción':'producto')+'</b>'+
+ '<p>Nombre<br><input style="width:100%" value="'+esc(f.nombre)+'" oninput="form.nombre=this.value"></p>'+
+ '<p>Categoría<br><input style="width:100%" list="cats" value="'+esc(f.categoria)+'" oninput="form.categoria=this.value"><datalist id="cats">'+[...new Set(A.map(p=>p.categoria))].map(c=>'<option value="'+esc(c)+'">').join("")+'</datalist></p>'+
+ '<p>Precio ($)<br><input type="number" min="0" step="0.5" value="'+esc(f.precio)+'" oninput="form.precio=this.value"></p>'+
+ '<p><label><input type="checkbox" style="width:auto" '+(f.promo?"checked":"")+' onchange="form.promo=this.checked"> Es promoción</label></p>'+
+ '<p>Precio normal (opcional, se muestra tachado)<br><input type="number" min="0" step="0.5" value="'+esc(f.precio_normal)+'" oninput="form.precio_normal=this.value"></p>'+
+ '<p>Vigente desde (opcional)<br><input type="datetime-local" style="width:auto" value="'+esc(f.desde)+'" onchange="form.desde=this.value"></p>'+
+ '<p>Vigente hasta (opcional)<br><input type="datetime-local" style="width:auto" value="'+esc(f.hasta)+'" onchange="form.hasta=this.value"></p>'+
+ '<p><label><input type="checkbox" style="width:auto" '+(f.activo?"checked":"")+' onchange="form.activo=this.checked"> Activo</label></p>'+
+ '<p><button onclick="guardarProd()">Guardar</button> <button class="g" onclick="form=null;render()">Cancelar</button></p></div>'}
+function adminMenu(){
+ let h=adminNav()+'<h1>Promociones y menú</h1><p><button onclick="nuevoProd(true)">+ Nueva promoción</button> <button class="g" onclick="nuevoProd(false)">+ Nuevo producto</button></p>';
+ if(form)h+=formHTML();
+ h+=A.map(p=>'<div class="card"><div class="row"><div><b>'+esc(p.nombre)+'</b> '+(p.promo?'<span class="tag Listo">Promo</span> ':'')+
+  (!p.activo?'<span class="tag Entregado">Inactivo</span>':!p.visible?'<span class="tag Nuevo">Fuera de vigencia</span>':'<span class="tag Listo">Visible</span>')+
+  '<div class="mut">'+esc(p.categoria)+' · '+(p.precio_normal?'<s>'+money(p.precio_normal)+'</s> ':'')+money(p.precio)+
+  (p.vigente_desde||p.vigente_hasta?' · '+(p.vigente_desde?'desde '+fmt(p.vigente_desde):'')+(p.vigente_hasta?' hasta '+fmt(p.vigente_hasta):''):'')+'</div></div>'+
+  '<span class="row"><button class="g" onclick="editar('+p.id+')">Editar</button><button class="g" onclick="activar('+p.id+','+(!p.activo)+')">'+(p.activo?'Desactivar':'Activar')+'</button><button class="g" onclick="eliminar('+p.id+')">Borrar</button></span></div></div>').join("");
+ return h}
+function cajaHTML(r,title,print){
+ const met=Object.entries(r.por_metodo||{}).map(([k,v])=>'<div class="row"><span>'+esc(cap(k))+'</span><span>'+money(v)+'</span></div>').join("")||'<div class="mut">—</div>';
+ const prod=(r.por_producto||[]).map(p=>'<div class="row"><span>'+p.q+'× '+esc(p.n)+'</span><span>'+money(p.total)+'</span></div>').join("")||'<div class="mut">—</div>';
+ return '<div'+(print?' id="ticket"':'')+' class="card" style="max-width:480px"><b>'+esc(title)+'</b>'+
+ '<div class="mut">'+(r.desde?'Desde: '+fmt(r.desde)+'<br>':'')+(r.cerrado_at?'Cierre: '+fmt(r.cerrado_at):'Hasta este momento')+'</div><hr>'+
+ '<div class="row"><span>Cuentas cerradas</span><b>'+r.cuentas+'</b></div><div class="row"><span>Pedidos</span><b>'+r.pedidos+'</b></div><hr>'+
+ '<div class="row" style="font-size:20px"><b>Dinero ingresado</b><b>'+money(r.ventas)+'</b></div><hr><b>Por método de pago</b>'+met+'<hr><b>Por producto</b>'+prod+'</div>'}
+async function cerrarCaja(){
+ if(!confirm("¿Cerrar la caja? Se guardará el corte con las ventas actuales."))return;
+ try{cajaRep=await rpc("cerrar_caja",{},true);toast("✅ Caja cerrada");await load(true);render();scrollTo(0,0)}catch(x){toast(x.message,true)}}
+function verCierre(id){const h=(A.historial||[]).find(x=>x.id===id);if(!h)return;
+ cajaRep={folio:h.id,desde:h.desde,cerrado_at:h.created_at,cuentas:h.cuentas,pedidos:h.pedidos,ventas:h.ventas,por_metodo:h.por_metodo,por_producto:h.por_producto};render();scrollTo(0,0)}
+function adminCaja(){
+ const a=A.actual,his=A.historial||[];
+ let h=adminNav()+'<h1>Caja</h1>';
+ if(cajaRep)h+=cajaHTML(cajaRep,"Corte de caja #"+cajaRep.folio,true)+'<p style="text-align:center"><button onclick="window.print()">Imprimir corte</button> <button class="g" onclick="cajaRep=null;render()">Ocultar</button></p>';
+ h+='<h2>Ventas desde el último cierre</h2>';
+ h+=a.cuentas?cajaHTML(a,"Resumen actual",false):'<div class="mut">No hay ventas nuevas por cerrar.</div>';
+ if(a.abiertas)h+='<div class="card" style="border-color:#b91c1c">Hay <b>'+a.abiertas+'</b> cuenta(s) abierta(s). Pide al mesero que las cierre para poder cerrar la caja.</div>';
+ h+='<p><button '+(a.cuentas&&!a.abiertas?"":"disabled")+' onclick="cerrarCaja()">Cerrar caja</button></p>';
+ h+='<h2>Cierres anteriores</h2>'+(his.length?his.map(x=>'<div class="card row"><span>#'+x.id+' · '+fmt(x.created_at)+'<div class="mut">'+x.cuentas+' cuentas · '+x.pedidos+' pedidos</div></span><span class="row"><b>'+money(x.ventas)+'</b><button class="g" onclick="verCierre('+x.id+')">Ver</button></span></div>').join(""):'<div class="mut">Aún no hay cierres.</div>');
+ return h}
+
+function render(){
+ const R=route(),el=$("#app");let h;
+ const staffRoute=R.t==="mesero"||R.t==="cocina"||R.t==="personal"||R.t==="admin";
+ if(staffRoute&&!ses)h=gate();
+ else if(R.t==="landing")h=landing();
+ else if(R.t==="personal")h=home();
+ else if(R.t==="admin"&&!isAdmin())h=ses.rol?'<h1>Acceso restringido</h1><p class="mut">Esta sección es solo para el gerente.</p>'+nav():'<p class="mut">Cargando…</p>';
+ else if(!loaded)h=errMsg?'<div class="card">No se pudo cargar: '+esc(errMsg)+'<p><button onclick="load(true)">Reintentar</button></p></div>':'<p class="mut">Cargando…</p>';
+ else h=R.t==="cliente"?cliente(R.m):R.t==="admin"?(R.tab==="caja"?adminCaja():adminMenu()):R.t==="cocina"?cocina():mesero();
+ el.innerHTML=h;
+ if(R.t==="personal"&&ses)drawQR()}
+
+sync();
+</script>
+</body>
+</html>
